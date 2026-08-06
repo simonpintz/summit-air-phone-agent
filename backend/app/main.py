@@ -57,8 +57,12 @@ def _extract_tool_calls(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], 
 
 
 def _get_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
-    function = tool_call.get("function", {})
-    arguments = function.get("arguments", {})
+    # Vapi's own docs have shown both a flat shape (arguments directly on the
+    # tool call) and a nested shape (arguments under `function`) - handle both.
+    function = tool_call.get("function") or {}
+    arguments = function.get("arguments")
+    if arguments is None:
+        arguments = tool_call.get("arguments", {})
     if isinstance(arguments, str):
         import json
 
@@ -69,12 +73,25 @@ def _get_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
     return arguments or {}
 
 
+def _get_tool_call_id(tool_call: dict[str, Any]) -> Optional[str]:
+    return tool_call.get("id") or tool_call.get("toolCallId")
+
+
 def _unauthorized() -> JSONResponse:
     return JSONResponse(status_code=401, content={"error": "invalid signature"})
 
 
 async def _read_and_verify(request: Request) -> Optional[dict[str, Any]]:
     raw_body = await request.body()
+
+    # TEMPORARY diagnostic: log every raw tool-call payload we receive so we
+    # can confirm the exact shape Vapi sends in production, since their docs
+    # have been inconsistent. Safe to remove once the integration is stable.
+    try:
+        storage.log_raw_tool_request(request.url.path, raw_body.decode("utf-8", errors="replace"))
+    except Exception:
+        logger.exception("Failed to log raw tool request")
+
     signature = request.headers.get("x-vapi-signature")
     if not is_valid_signature(raw_body, signature):
         return None
@@ -111,7 +128,7 @@ async def check_availability(request: Request, x_vapi_signature: Optional[str] =
             "Offer these to the caller and ask which works best."
         )
         logger.info("check_availability call_id=%s urgency=%s -> %s", call_id, urgency_level, slots)
-        results.append({"toolCallId": tool_call.get("id"), "result": result})
+        results.append({"toolCallId": _get_tool_call_id(tool_call), "result": result})
 
     return {"results": results}
 
@@ -172,7 +189,7 @@ async def book_appointment(request: Request, x_vapi_signature: Optional[str] = H
             f"{customer_name}, {property_type}, window: {selected_window}. "
             "Read this confirmation number back to the caller clearly."
         )
-        results.append({"toolCallId": tool_call.get("id"), "result": result})
+        results.append({"toolCallId": _get_tool_call_id(tool_call), "result": result})
 
     return {"results": results}
 
@@ -222,7 +239,7 @@ async def escalate_urgent(request: Request, x_vapi_signature: Optional[str] = He
             "make sure the caller knows to leave the property and call the gas company or 911 "
             "before anything else. Otherwise continue collecting booking details as priority."
         )
-        results.append({"toolCallId": tool_call.get("id"), "result": result})
+        results.append({"toolCallId": _get_tool_call_id(tool_call), "result": result})
 
     return {"results": results}
 
@@ -235,6 +252,15 @@ def _check_admin(token: Optional[str]) -> bool:
     if not ADMIN_TOKEN:
         return True
     return token == ADMIN_TOKEN
+
+
+@app.get("/debug/raw-tool-requests")
+def debug_raw_tool_requests(token: Optional[str] = None, limit: int = 20):
+    """TEMPORARY: inspect exactly what Vapi is sending, to debug integration
+    issues. Remove once the tool-call format is confirmed stable."""
+    if not _check_admin(token):
+        return JSONResponse(status_code=401, content={"error": "unauthorized"})
+    return {"requests": storage.list_raw_tool_requests(limit)}
 
 
 @app.get("/bookings", response_class=HTMLResponse)

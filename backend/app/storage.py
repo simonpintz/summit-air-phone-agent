@@ -42,6 +42,13 @@ CREATE TABLE IF NOT EXISTS escalations (
     details TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS raw_tool_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -144,5 +151,33 @@ def list_escalations(limit: int = 100) -> list[dict[str, Any]]:
     with get_connection() as connection:
         rows = connection.execute(
             "SELECT * FROM escalations ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def log_raw_tool_request(path: str, body: str) -> None:
+    """Temporary diagnostic log of raw incoming tool-call payloads.
+
+    Vapi's documented request shape for toolCallList items has been
+    inconsistent across their own docs (flat vs. nested under `function`).
+    This lets us see exactly what's actually being sent without needing
+    dashboard log access. Keeps only the most recent 50 rows.
+    """
+    created_at = datetime.now(timezone.utc).isoformat()
+    with get_connection() as connection:
+        connection.execute(
+            "INSERT INTO raw_tool_requests (path, body, created_at) VALUES (?, ?, ?)",
+            (path, body, created_at),
+        )
+        connection.execute(
+            "DELETE FROM raw_tool_requests WHERE id NOT IN "
+            "(SELECT id FROM raw_tool_requests ORDER BY id DESC LIMIT 50)"
+        )
+
+
+def list_raw_tool_requests(limit: int = 20) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM raw_tool_requests ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(row) for row in rows]
