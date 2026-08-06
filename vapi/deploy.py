@@ -18,6 +18,7 @@ updates them in place instead of creating duplicates.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -160,6 +161,22 @@ def upsert_phone_number(client: httpx.Client, assistant_id: str, area_code: str 
         payload["numberDesiredAreaCode"] = area_code
 
     resp = client.post("/phone-number", json=payload)
+    if resp.status_code == 400:
+        # Vapi's free numbers only support a rotating subset of area codes and
+        # says which ones are currently available in the error message, e.g.
+        # "This area code is currently not available. Hint: Try one of 943, 272, 572."
+        detail = resp.json().get("message", "")
+        detail_text = detail if isinstance(detail, str) else " ".join(detail)
+        match = re.search(r"Try one of ([\d, ]+)", detail_text)
+        if match:
+            fallback_code = match.group(1).split(",")[0].strip()
+            print(
+                f"Area code {area_code!r} unavailable, retrying with suggested "
+                f"area code {fallback_code!r} instead."
+            )
+            payload["numberDesiredAreaCode"] = fallback_code
+            resp = client.post("/phone-number", json=payload)
+
     resp.raise_for_status()
     number = resp.json()
     print(f"Created phone number {number.get('number')} ({number.get('id')}) -> assistant {assistant_id}")
@@ -170,7 +187,10 @@ def main() -> None:
     api_key = _require_env("VAPI_API_KEY")
     backend_base_url = _require_env("BACKEND_BASE_URL")
     tool_secret = os.environ.get("VAPI_TOOL_SECRET", "")
-    area_code = os.environ.get("VAPI_AREA_CODE") or None
+    # Vapi's free "vapi" phone number provider requires a US area code up front.
+    # No real-world location was specified for Summit Air, so default to a
+    # placeholder area code - override with VAPI_AREA_CODE for a real one.
+    area_code = os.environ.get("VAPI_AREA_CODE") or "312"
 
     if not tool_secret:
         print(
