@@ -14,11 +14,26 @@ from typing import Optional
 VAPI_TOOL_SECRET = os.environ.get("VAPI_TOOL_SECRET", "")
 
 
-def is_valid_signature(raw_body: bytes, signature_header: Optional[str]) -> bool:
+def is_valid_signature(
+    raw_body: bytes,
+    signature_header: Optional[str],
+    secret_header: Optional[str] = None,
+) -> bool:
     # If no secret is configured, skip verification (useful for local dev).
     # Always require a secret in any deployed environment.
     if not VAPI_TOOL_SECRET:
         return True
+
+    # Vapi's docs/behavior have varied on how the inline tool `server.secret`
+    # is delivered: some revisions HMAC-sign the body into `x-vapi-signature`,
+    # others send the raw shared secret directly as `x-vapi-secret`. Accept
+    # either so we're not fragile to which one is actually in effect.
+    if secret_header is not None:
+        try:
+            return hmac.compare_digest(VAPI_TOOL_SECRET, secret_header)
+        except (TypeError, ValueError):
+            return False
+
     if not signature_header:
         return False
 

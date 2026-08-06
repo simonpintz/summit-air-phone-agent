@@ -100,17 +100,28 @@ def _unauthorized() -> JSONResponse:
     return JSONResponse(status_code=401, content={"error": "invalid signature"})
 
 
+_SENSITIVE_HEADER_PREFIXES = ("authorization",)
+
+
+def _safe_headers(request: Request) -> dict[str, str]:
+    return {
+        k: v for k, v in request.headers.items() if not k.lower().startswith(_SENSITIVE_HEADER_PREFIXES)
+    }
+
+
 async def _read_and_verify(request: Request) -> Optional[dict[str, Any]]:
     raw_body = await request.body()
     signature = request.headers.get("x-vapi-signature")
-    valid = is_valid_signature(raw_body, signature)
+    secret_header = request.headers.get("x-vapi-secret")
+    valid = is_valid_signature(raw_body, signature, secret_header)
 
     # TEMPORARY diagnostic: log every raw tool-call payload we receive, plus
-    # whether it passed signature verification, so we can debug integration
-    # issues without dashboard log access. Safe to remove once stable.
+    # whether it passed signature verification and the full header set, so we
+    # can debug integration issues without dashboard log access. Safe to
+    # remove once the auth mechanism is confirmed stable.
     try:
         debug_record = {
-            "signature_header": signature,
+            "headers": _safe_headers(request),
             "signature_valid": valid,
             "body": raw_body.decode("utf-8", errors="replace"),
         }
