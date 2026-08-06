@@ -16,6 +16,7 @@ from __future__ import annotations
 import html
 import logging
 import os
+import traceback
 from typing import Any, Optional
 
 from fastapi import FastAPI, Header, Request
@@ -41,6 +42,24 @@ def on_startup() -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # TEMPORARY diagnostic: capture unhandled exceptions in the same debug
+    # log as raw requests, so tool-call crashes are visible via
+    # /debug/raw-tool-requests without needing dashboard log access.
+    logger.exception("Unhandled exception on %s", request.url.path)
+    try:
+        import json as _json
+
+        storage.log_raw_tool_request(
+            request.url.path,
+            _json.dumps({"unhandled_exception": "".join(traceback.format_exception(exc))}),
+        )
+    except Exception:
+        logger.exception("Failed to log unhandled exception")
+    return JSONResponse(status_code=500, content={"error": "internal error"})
 
 
 # ---------------------------------------------------------------------------
@@ -83,17 +102,25 @@ def _unauthorized() -> JSONResponse:
 
 async def _read_and_verify(request: Request) -> Optional[dict[str, Any]]:
     raw_body = await request.body()
+    signature = request.headers.get("x-vapi-signature")
+    valid = is_valid_signature(raw_body, signature)
 
-    # TEMPORARY diagnostic: log every raw tool-call payload we receive so we
-    # can confirm the exact shape Vapi sends in production, since their docs
-    # have been inconsistent. Safe to remove once the integration is stable.
+    # TEMPORARY diagnostic: log every raw tool-call payload we receive, plus
+    # whether it passed signature verification, so we can debug integration
+    # issues without dashboard log access. Safe to remove once stable.
     try:
-        storage.log_raw_tool_request(request.url.path, raw_body.decode("utf-8", errors="replace"))
+        debug_record = {
+            "signature_header": signature,
+            "signature_valid": valid,
+            "body": raw_body.decode("utf-8", errors="replace"),
+        }
+        import json as _json
+
+        storage.log_raw_tool_request(request.url.path, _json.dumps(debug_record))
     except Exception:
         logger.exception("Failed to log raw tool request")
 
-    signature = request.headers.get("x-vapi-signature")
-    if not is_valid_signature(raw_body, signature):
+    if not valid:
         return None
     import json
 
