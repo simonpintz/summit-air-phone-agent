@@ -121,6 +121,12 @@ def upsert_assistant(client: httpx.Client, tool_ids: list[str], first_message: s
             "messages": [{"role": "system", "content": system_prompt}],
             "toolIds": tool_ids,
         },
+        # Explicit voice/transcriber rather than relying on defaults - API-created
+        # assistants don't reliably inherit the dashboard's "Balanced preset".
+        # Uses Vapi's own pass-through billing so no separate 11labs/Deepgram
+        # account is required.
+        "voice": {"provider": "vapi", "voiceId": "Elliot", "version": 2},
+        "transcriber": {"provider": "deepgram", "model": "flux-general-en", "language": "en"},
     }
 
     existing = client.get("/assistant").raise_for_status().json()
